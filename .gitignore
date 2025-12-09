@@ -1,0 +1,98 @@
+###############################
+# PYTHON
+###############################
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+###############################
+# VIRTUAL ENVIRONMENTS
+###############################
+.venv/
+venv/
+env/
+
+###############################
+# BYTECODE / BUILD / DISTRIBUTION
+###############################
+*.so
+*.dylib
+*.dll
+*.pyd
+*.whl
+build/
+dist/
+*.egg-info/
+
+###############################
+# ML / DL MODEL FILES
+###############################
+*.pth
+*.pt
+*.h5
+*.ckpt
+*.tflite
+*.pb
+*.onnx
+*.npz
+*.npy
+models/
+saved_models/
+
+###############################
+# DATASETS (too large for GitHub)
+###############################
+data/
+datasets/
+*.csv
+*.tsv
+*.parquet
+
+###############################
+# IMAGE / VIDEO OUTPUTS
+###############################
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+*.mp4
+*.avi
+*.mov
+
+###############################
+# LOGS / TEMP FILES
+###############################
+*.log
+logs/
+*.tmp
+temp/
+cache/
+*.DS_Store
+
+###############################
+# JUPYTER NOTEBOOK
+###############################
+.ipynb_checkpoints/
+
+###############################
+# IDE / EDITOR FILES
+###############################
+.vscode/
+.idea/
+*.swp
+*.swo
+
+###############################
+# FACE RECOGNITION LIBRARIES
+###############################
+# Avoid DLL/pyd from dlib, mediapipe, opencv, tensorflow, torch
+# These files are huge and should not go to GitHub
+*/site-packages/
+*/dist-packages/
+
+###############################
+# OTHER
+###############################
+*.bak
