@@ -2,50 +2,106 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from sklearn.model_selection import train_test_split
-from itertools import combinations
+import cv2
 from .config import Config
 
 class PairGenerator:
     def __init__(self):
         self.processed_dir = Path(Config.PROCESSED_DATA_DIR)
-        self.poses = ['front.jpg', 'left.jpg', 'right.jpg']
+        self.poses = ['front.jpg']  # Only front images
         
     def get_person_images(self):
-        """Get all person directories and their images"""
+        """Get all person directories and their front images"""
         person_dirs = sorted([d for d in self.processed_dir.iterdir() if d.is_dir()])
         
         person_images = {}
         for person_dir in person_dirs:
             person_id = person_dir.name
-            images = {}
             
-            for pose in self.poses:
-                img_path = person_dir / pose
-                if img_path.exists() and img_path.stat().st_size > 0:  # Check file exists and not empty
-                    images[pose] = str(img_path)
-            
-            # Accept persons with at least 2 images
-            if len(images) >= 2:
-                person_images[person_id] = images
+            front_path = person_dir / 'front.jpg'
+            if front_path.exists() and front_path.stat().st_size > 0:
+                person_images[person_id] = str(front_path)
                 
         return person_images
     
+    def create_augmented_version(self, image_path, aug_type):
+        """
+        Create augmented version of image for positive pairs
+        aug_type: 'flip', 'bright', 'dark', 'rotate_left', 'rotate_right', 'crop_left', 'crop_right'
+        """
+        image = cv2.imread(image_path)
+        if image is None:
+            return None
+        
+        h, w = image.shape[:2]
+        
+        if aug_type == 'flip':
+            # Horizontal flip
+            augmented = cv2.flip(image, 1)
+            
+        elif aug_type == 'bright':
+            # Increase brightness
+            augmented = cv2.convertScaleAbs(image, alpha=1.2, beta=20)
+            
+        elif aug_type == 'dark':
+            # Decrease brightness
+            augmented = cv2.convertScaleAbs(image, alpha=0.8, beta=-20)
+            
+        elif aug_type == 'rotate_left':
+            # Rotate 5 degrees left
+            center = (w // 2, h // 2)
+            matrix = cv2.getRotationMatrix2D(center, 5, 1.0)
+            augmented = cv2.warpAffine(image, matrix, (w, h))
+            
+        elif aug_type == 'rotate_right':
+            # Rotate 5 degrees right
+            center = (w // 2, h // 2)
+            matrix = cv2.getRotationMatrix2D(center, -5, 1.0)
+            augmented = cv2.warpAffine(image, matrix, (w, h))
+            
+        elif aug_type == 'crop_left':
+            # Crop and resize - slight left shift
+            crop = image[:, int(w*0.05):, :]
+            augmented = cv2.resize(crop, (w, h))
+            
+        elif aug_type == 'crop_right':
+            # Crop and resize - slight right shift
+            crop = image[:, :int(w*0.95), :]
+            augmented = cv2.resize(crop, (w, h))
+        
+        else:
+            augmented = image
+        
+        # Save augmented version temporarily
+        temp_dir = Path(Config.PROCESSED_DATA_DIR) / '_augmented_temp'
+        temp_dir.mkdir(exist_ok=True)
+        
+        person_id = Path(image_path).parent.name
+        aug_path = temp_dir / f"{person_id}_{aug_type}.jpg"
+        cv2.imwrite(str(aug_path), augmented)
+        
+        return str(aug_path)
+    
     def generate_positive_pairs(self, person_images):
-        """Generate positive pairs (same person, different poses)"""
+        """Generate positive pairs using original + augmented versions"""
         positive_pairs = []
         
-        for person_id, images in person_images.items():
-            available_poses = list(images.keys())
-            
-            # Generate all combinations of available poses
-            for pose1, pose2 in combinations(available_poses, 2):
-                positive_pairs.append({
-                    'image1': images[pose1],
-                    'image2': images[pose2],
-                    'label': 1,
-                    'person1': person_id,
-                    'person2': person_id
-                })
+        aug_types = ['flip', 'bright', 'dark', 'rotate_left', 'rotate_right', 'crop_left', 'crop_right']
+        
+        for person_id, image_path in person_images.items():
+            # Create multiple positive pairs per person using different augmentations
+            for aug_type in aug_types:
+                aug_path = self.create_augmented_version(image_path, aug_type)
+                
+                if aug_path:
+                    positive_pairs.append({
+                        'image1': image_path,
+                        'image2': aug_path,
+                        'label': 1,
+                        'person1': person_id,
+                        'person2': person_id,
+                        'augmentation': aug_type
+                    })
         
         return positive_pairs
     
@@ -54,20 +110,21 @@ class PairGenerator:
         negative_pairs = []
         person_ids = list(person_images.keys())
         
+        if len(person_ids) < 2:
+            print("Not enough persons for negative pairs!")
+            return negative_pairs
+        
         while len(negative_pairs) < num_pairs:
             # Random person pair
             p1, p2 = np.random.choice(person_ids, 2, replace=False)
             
-            # Random poses from available poses
-            pose1 = np.random.choice(list(person_images[p1].keys()))
-            pose2 = np.random.choice(list(person_images[p2].keys()))
-            
             negative_pairs.append({
-                'image1': person_images[p1][pose1],
-                'image2': person_images[p2][pose2],
+                'image1': person_images[p1],
+                'image2': person_images[p2],
                 'label': 0,
                 'person1': p1,
-                'person2': p2
+                'person2': p2,
+                'augmentation': 'none'
             })
         
         return negative_pairs
@@ -75,11 +132,15 @@ class PairGenerator:
     def generate_and_save_pairs(self):
         """Generate all pairs and save to CSV"""
         person_images = self.get_person_images()
-        print(f"Found {len(person_images)} persons with complete image sets")
+        print(f"Found {len(person_images)} persons with front images")
         
-        # Generate positive pairs
+        if len(person_images) < 2:
+            print("Error: Need at least 2 persons to create pairs!")
+            return None
+        
+        # Generate positive pairs (7 augmentations per person)
         positive_pairs = self.generate_positive_pairs(person_images)
-        print(f"Generated {len(positive_pairs)} positive pairs")
+        print(f"Generated {len(positive_pairs)} positive pairs (with augmentation)")
         
         # Generate equal number of negative pairs
         negative_pairs = self.generate_negative_pairs(person_images, len(positive_pairs))
