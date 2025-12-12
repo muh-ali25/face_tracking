@@ -1,153 +1,141 @@
 import cv2
 import numpy as np
 from pathlib import Path
-from mtcnn import MTCNN
 from .config import Config
 
 class FaceAligner:
     def __init__(self):
-        self.detector = MTCNN()
-        
-    def detect_landmarks(self, image):
-        """Detect facial landmarks using MTCNN"""
-        try:
-            # MTCNN expects RGB
-            faces = self.detector.detect_faces(image)
-            
-            if not faces or len(faces) == 0:
-                return None
-            
-            # Get first face
-            face = faces[0]
-            
-            # Extract bounding box
-            x, y, w, h = face['box']
-            
-            # Extract landmarks
-            keypoints = face['keypoints']
-            landmarks = np.array([
-                keypoints['left_eye'],
-                keypoints['right_eye'],
-                keypoints['nose'],
-                keypoints['mouth_left'],
-                keypoints['mouth_right']
-            ])
-            
-            facial_area = [x, y, x+w, y+h]
-            
-            return landmarks, facial_area
-            
-        except Exception as e:
-            print(f"Detection error: {e}")
-            return None
+        """No detector needed - using geometric cropping"""
+        pass
     
-    def align_face(self, image, landmarks, facial_area):
-        """Align face based on eye positions"""
-        left_eye = landmarks[0]
-        right_eye = landmarks[1]
+    def extract_periocular_region(self, image):
+        """
+        Extract eye region (eyes, eyebrows, forehead) from image
+        Works without face detection - uses geometric approach
+        """
+        h, w = image.shape[:2]
         
-        # Calculate angle
-        dY = right_eye[1] - left_eye[1]
-        dX = right_eye[0] - left_eye[0]
-        angle = np.degrees(np.arctan2(dY, dX))
+        # Focus on upper-middle portion of image where eyes typically are
+        # Assuming images are roughly centered portraits
         
-        # Get eye midpoint
-        eyes_center = ((left_eye[0] + right_eye[0]) / 2,
-                    (left_eye[1] + right_eye[1]) / 2)
+        # Vertical: Take upper 65% of image (forehead to nose bridge)
+        top = int(h * 0.15)  # Start 15% from top (captures forehead)
+        bottom = int(h * 0.65)  # End at 65% (captures to nose bridge)
         
-        # Rotation matrix
-        M = cv2.getRotationMatrix2D(tuple(eyes_center), angle, 1.0)
+        # Horizontal: Take middle 80% (both eyes + surrounding area)
+        left = int(w * 0.10)
+        right = int(w * 0.90)
         
-        # Apply rotation
-        aligned = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]),
-                                flags=cv2.INTER_CUBIC)
+        # Crop periocular region
+        periocular = image[top:bottom, left:right]
         
-        # Crop using facial area with padding
-        x, y, x2, y2 = facial_area
-        padding = 50
-        x = max(0, x - padding)
-        y = max(0, y - padding)
-        x2 = min(aligned.shape[1], x2 + padding)
-        y2 = min(aligned.shape[0], y2 + padding)
-        
-        cropped = aligned[y:y2, x:x2]
-        
-        if cropped.size == 0:
+        # Ensure we got a valid crop
+        if periocular.size == 0:
             return None
         
-        # Resize to target size
-        resized = cv2.resize(cropped, Config.IMG_SIZE)
+        return periocular
+    
+    def enhance_image(self, image):
+        """
+        Enhance image quality for better feature extraction
+        """
+        # Convert to LAB color space for better contrast adjustment
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
         
-        return resized
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        l = clahe.apply(l)
+        
+        # Merge channels
+        enhanced_lab = cv2.merge([l, a, b])
+        enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+        
+        return enhanced
     
     def process_image(self, image_path, save_path=None):
-        """Complete pipeline: load, detect, align, save"""
+        """
+        Complete pipeline: load, extract periocular region, enhance, save
+        """
         image = cv2.imread(str(image_path))
         if image is None:
             print(f"Failed to load: {image_path}")
             return None
         
-        # Convert BGR to RGB for MTCNN
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        result = self.detect_landmarks(image_rgb)
-        if result is None:
-            print(f"No face detected: {image_path}")
+        # Extract periocular region
+        periocular = self.extract_periocular_region(image)
+        if periocular is None:
+            print(f"Failed to extract region: {image_path}")
             return None
         
-        landmarks, facial_area = result
+        # Enhance image quality
+        enhanced = self.enhance_image(periocular)
         
-        aligned = self.align_face(image, landmarks, facial_area)
-        if aligned is None:
-            print(f"Alignment failed: {image_path}")
-            return None
+        # Resize to target size
+        resized = cv2.resize(enhanced, Config.IMG_SIZE, interpolation=cv2.INTER_CUBIC)
         
         if save_path:
-            cv2.imwrite(str(save_path), aligned)
+            cv2.imwrite(str(save_path), resized)
         
-        return aligned
+        return resized
     
     def process_dataset(self):
-        """Process all images in raw data directory"""
+        """Process all images in raw data directory - FRONT ONLY"""
         raw_dir = Path(Config.RAW_DATA_DIR)
         processed_dir = Path(Config.PROCESSED_DATA_DIR)
         
+        # Clear processed directory for fresh start
+        import shutil
+        if processed_dir.exists():
+            print("Cleaning previous processed data...")
+            shutil.rmtree(processed_dir)
+        processed_dir.mkdir(exist_ok=True)
+        
         person_dirs = sorted([d for d in raw_dir.iterdir() if d.is_dir()])
         
-        print(f"Processing {len(person_dirs)} persons...")
+        print(f"Processing {len(person_dirs)} persons with periocular extraction...")
+        print("Processing FRONT images only (ignoring left/right)")
+        print("=" * 60)
         
         success_count = 0
         fail_count = 0
+        total_images_processed = 0
         
         for person_dir in person_dirs:
             person_id = person_dir.name
             output_person_dir = processed_dir / person_id
             output_person_dir.mkdir(exist_ok=True)
             
-            person_success = True
+            person_success = False
             
-            for pose in ['front.jpg', 'left.jpg', 'right.jpg']:
+            # Only process front.jpg
+            for pose in ['front.jpg']:
                 img_path = person_dir / pose
                 if not img_path.exists():
-                    print(f"Missing {pose} for {person_id}")
-                    person_success = False
+                    print(f" {person_id}: Missing front.jpg")
                     continue
                 
                 save_path = output_person_dir / pose
                 result = self.process_image(img_path, save_path)
                 
-                if result is None:
-                    person_success = False
+                if result is not None:
+                    person_success = True
+                    total_images_processed += 1
+                    print(f" {person_id}: front.jpg processed")
+                else:
+                    print(f" {person_id}: front.jpg failed")
             
             if person_success:
                 success_count += 1
             else:
                 fail_count += 1
         
+        print("=" * 60)
         print(f"\nProcessing complete!")
-        print(f"✓ Successfully processed: {success_count} persons")
-        print(f"✗ Failed to process: {fail_count} persons")
-        print(f"Total: {success_count + fail_count} persons")
+        print(f" Successfully processed: {success_count} persons")
+        print(f" Failed to process: {fail_count} persons")
+        print(f" Total images processed: {total_images_processed}")
+        print(f" Success rate: {success_count}/{len(person_dirs)} ({success_count/len(person_dirs)*100:.1f}%)")
 
 if __name__ == "__main__":
     aligner = FaceAligner()
