@@ -21,8 +21,7 @@ def prepare_data():
     print("STEP 2: Generating training pairs")
     print("=" * 50)
     generator = PairGenerator()
-    generator.generate_and_save_pairs()
-
+    generator.split_persons_and_save()
 def train():
     """Step 3: Train the model"""
     print("\n" + "=" * 50)
